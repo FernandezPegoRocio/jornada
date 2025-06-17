@@ -13,7 +13,7 @@
         .controls { margin-left: 10px; }
         button { margin: 5px 0; padding: 5px 10px; }
         select { margin: 5px 0; padding: 5px; }
-        .piece-menu { margin-top: 10px; }
+        #noteDisplay { margin-top: 10px; font-size: 16px; color: #333; }
     </style>
 </head>
 <body>
@@ -26,14 +26,11 @@
                     <option value="0">Piano</option>
                     <option value="1">Organ</option>
                     <option value="2">Synth</option>
-                </select>
+            </select>
                 <button id="startButton">Iniciar</button>
                 <button id="endButton" disabled>Finalizar</button>
             </div>
-            <div class="piece-menu">
-                <p>Piezas activas:</p>
-                <div id="pieceList"></div>
-            </div>
+            <div id="noteDisplay">Nota actual: -</div>
         </div>
     </div>
     <script>
@@ -58,6 +55,7 @@
         // Canvas setup
         const gameCanvas = document.getElementById('gameCanvas');
         const previewCanvas = document.getElementById('previewCanvas');
+        const noteDisplay = document.getElementById('noteDisplay');
         gameCanvas.width = 400;
         gameCanvas.height = 600;
         previewCanvas.width = 100;
@@ -123,6 +121,7 @@
                     this.x = Math.floor((cols - this.type[0].length) / 2);
                     this.y = 0;
                 }
+                sendMidiNote(64, 100); // Mi al rotar
                 sendMidiCC();
             }
 
@@ -131,11 +130,17 @@
                 if (this.x < 0) this.x = 0;
                 if (this.x + this.type[0].length > cols) this.x = cols - this.type[0].length;
                 if (this.collides()) this.x -= dx;
+                const note = dx === -1 ? 60 : 62; // Do (60) a la izquierda, Re (62) a la derecha
+                sendMidiNote(note, 100); // Nota al mover
                 sendMidiCC();
             }
 
             update() {
                 this.y += this.vy;
+                // Reproducir nota mientras cae (varía con la posición Y)
+                const fallNote = 60 + Math.floor((this.y / rows) * 12) % 12; // Escala ascendente
+                sendMidiNote(fallNote, 80); // Nota más suave mientras cae
+                noteDisplay.textContent = `Nota actual: ${fallNote} (C${Math.floor(fallNote / 12) - 1})`; // Mostrar nota
                 if (this.collides()) {
                     this.y = Math.floor(this.y);
                     return false;
@@ -144,6 +149,7 @@
             }
 
             lock() {
+                let noteCount = 0;
                 for (let row = 0; row < this.type.length; row++) {
                     for (let col = 0; col < this.type[row].length; col++) {
                         if (this.type[row][col]) {
@@ -151,13 +157,32 @@
                             const gridX = this.x + col;
                             if (gridY >= 0 && gridY < rows && gridX >= 0 && gridX < cols) {
                                 grid[gridY][gridX] = 1;
+                                noteCount++;
                             }
                         }
                     }
                 }
-                sendMidiNote(60 + Math.floor(Math.random() * 12), 100); // Note on lock
+                // Asignar notas según el rango de noteCount
+                const noteMap = [
+                    { range: [1, 2], note: 60 },  // Do
+                    { range: [3, 4], note: 62 },  // Re
+                    { range: [5, 6], note: 64 },  // Mi
+                    { range: [7, 8], note: 65 },  // Fa
+                    { range: [9, 10], note: 67 }, // Sol
+                    { range: [11, 12], note: 69 }, // La
+                    { range: [13, 14], note: 71 }, // Si
+                    { range: [15, 16], note: 72 }  // Do
+                ];
+                const range = noteMap.find(r => noteCount >= r.range[0] && noteCount <= r.range[1]);
+                if (range) {
+                    sendMidiNote(range.note, 100); // Nota principal al caer
+                    // Notas adicionales basadas en los cuadrados que tocan el suelo
+                    for (let i = 0; i < Math.min(noteCount, 4); i++) {
+                        sendMidiNote(range.note + i, 100); // Hasta 4 notas
+                    }
+                    noteDisplay.textContent = `Nota al caer: ${range.note} (C${Math.floor(range.note / 12) - 1})`; // Actualizar al caer
+                }
                 lockedPieces.push({ type: this.type, color: this.color, instrument: this.instrument, x: this.x, y: this.y });
-                updatePieceList();
                 return new TetrisPiece();
             }
 
@@ -228,49 +253,33 @@
             }
         }
 
-        function updatePieceList() {
-            const pieceList = document.getElementById('pieceList');
-            pieceList.innerHTML = '';
-            lockedPieces.forEach((piece, index) => {
-                const div = document.createElement('div');
-                div.style.backgroundColor = piece.color;
-                div.innerHTML = `Pieza ${index + 1} (Inst: ${piece.instrument}) <button onclick="removePiece(${index})">Eliminar</button>`;
-                pieceList.appendChild(div);
-            });
-        }
-
-        function removePiece(index) {
-            lockedPieces.splice(index, 1);
-            updatePieceList();
-        }
-
         function handleKeys(event) {
             if (!isRunning) return;
             switch (event.key) {
                 case 'ArrowLeft':
                     currentPiece.move(-1);
-                    sendMidiNote(60, 100); // Nota al mover a la izquierda
                     break;
                 case 'ArrowRight':
                     currentPiece.move(1);
-                    sendMidiNote(62, 100); // Nota al mover a la derecha
                     break;
                 case 'ArrowUp':
                     currentPiece.rotate();
-                    sendMidiNote(64, 100); // Nota al rotar
                     break;
                 case 'ArrowDown':
                     while (!currentPiece.collides() && currentPiece.y < rows - currentPiece.type.length) {
                         currentPiece.y += 1;
                     }
                     currentPiece.y -= 1;
-                    sendMidiNote(65, 100); // Nota al caer rápido
                     break;
             }
             sendMidiCC();
         }
 
         document.addEventListener('keydown', handleKeys);
+        document.addEventListener('keyup', () => {
+            // Detener notas al soltar la tecla
+            sendMidiNote(0, 0); // Note Off genérico
+        });
 
         function getTranslatedValueCutOff(value) {
             return Math.round((value / gameCanvas.width) * 127);
